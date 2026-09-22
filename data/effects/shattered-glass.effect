@@ -1,0 +1,246 @@
+// VoidFX - Shattered Glass
+// Cuts the source into Voronoi shards (random, or radiating from an impact
+// point), then offsets, rotates and shades each shard and draws the cracks
+// between them.
+
+uniform float4x4 ViewProj;
+uniform texture2d image;
+
+uniform float2 uv_size;
+
+// 0 = random shards, 1 = impact (radial) pattern
+uniform float impact_pattern;
+// Random pattern: shard size in pixels.
+uniform float shard_size;
+// Impact pattern: number of radial cracks and concentric rings.
+uniform float radial_count;
+uniform float ring_count;
+uniform float2 impact;
+
+uniform float irregularity;
+uniform float2 seed;
+
+// Per-shard transform, already scaled by the overall shatter amount.
+uniform float displacement;
+uniform float rotation;
+uniform float scatter;
+
+uniform float crack_width;
+uniform float4 crack_color;
+uniform float gap_width;
+uniform float edge_highlight;
+uniform float shading;
+
+sampler_state textureSampler {
+	Filter      = Linear;
+	AddressU    = Border;
+	AddressV    = Border;
+	BorderColor = 00000000;
+};
+
+struct VertData {
+	float4 pos : POSITION;
+	float2 uv  : TEXCOORD0;
+};
+
+VertData VSDefault(VertData v_in)
+{
+	VertData vert_out;
+	vert_out.pos = mul(float4(v_in.pos.xyz, 1.0), ViewProj);
+	vert_out.uv  = v_in.uv;
+	return vert_out;
+}
+
+float2 hash22(float2 p)
+{
+	float3 p3 = frac(float3(p.x, p.y, p.x) * float3(0.1031, 0.1030, 0.0973));
+	p3 += dot(p3, p3.yzx + 33.33);
+	return frac((p3.xx + p3.yz) * p3.zy);
+}
+
+// In the impact pattern the x axis is the angle around the impact point, so
+// cell ids wrap around the circle to avoid a seam where the angle flips sign.
+float2 wrap_cell(float2 cell)
+{
+	float count = max(radial_count, 1.0);
+	float wrapped = cell.x - count * floor(cell.x / count);
+	return float2(lerp(cell.x, wrapped, impact_pattern), cell.y);
+}
+
+float2 cell_point(float2 cell)
+{
+	return lerp(float2(0.5, 0.5), hash22(wrap_cell(cell) + seed), irregularity);
+}
+
+// Nearest Voronoi site. Returns (vector to site, cell id).
+float4 voronoi_nearest(float2 x)
+{
+	float2 n = floor(x);
+	float2 f = x - n;
+
+	float2 best_r = float2(0.0, 0.0);
+	float2 best_g = float2(0.0, 0.0);
+	float best_d = 1e10;
+
+	for (int j = -1; j <= 1; j++) {
+		for (int i = -1; i <= 1; i++) {
+			float2 g = float2(i, j);
+			float2 r = g + cell_point(n + g) - f;
+			float d = dot(r, r);
+			if (d < best_d) {
+				best_d = d;
+				best_r = r;
+				best_g = g;
+			}
+		}
+	}
+
+	return float4(best_r, n + best_g);
+}
+
+// Distance to the nearest shard border. Returns (distance, border normal).
+float3 voronoi_border(float2 x, float2 best_r, float2 cell)
+{
+	float2 n = floor(x);
+	float2 f = x - n;
+	float2 mg = cell - n;
+
+	float best_d = 1e10;
+	float2 best_n = float2(1.0, 0.0);
+
+	for (int j = -2; j <= 2; j++) {
+		for (int i = -2; i <= 2; i++) {
+			float2 g = mg + float2(i, j);
+			float2 r = g + cell_point(n + g) - f;
+			float2 diff = r - best_r;
+			float len2 = dot(diff, diff);
+			if (len2 > 0.00001) {
+				float2 dir = diff / sqrt(len2);
+				float d = dot(0.5 * (best_r + r), dir);
+				if (d < best_d) {
+					best_d = d;
+					best_n = dir;
+				}
+			}
+		}
+	}
+
+	return float3(best_d, best_n);
+}
+
+// Pixel position -> pattern space. Impact rings use an exponent of 0.6 so they
+// get tighter towards the point of impact.
+float2 to_pattern(float2 px, float2 impact_px, float ref)
+{
+	if (impact_pattern < 0.5)
+		return px / shard_size;
+
+	float2 d = px - impact_px;
+	float r = max(length(d), 0.001);
+	float ang = atan2(d.y, d.x);
+	return float2((ang / 6.2831853 + 0.5) * radial_count, pow(r / ref, 0.6) * ring_count);
+}
+
+// Pattern space -> pixel position.
+float2 from_pattern(float2 p, float2 impact_px, float ref)
+{
+	if (impact_pattern < 0.5)
+		return p * shard_size;
+
+	float ang = (p.x / radial_count - 0.5) * 6.2831853;
+	float r = ref * pow(max(p.y, 0.0) / ring_count, 1.0 / 0.6);
+	return impact_px + float2(cos(ang), sin(ang)) * r;
+}
+
+// Pixels per pattern unit along each pattern axis at `px`.
+float2 pattern_scale(float2 px, float2 impact_px, float ref)
+{
+	if (impact_pattern < 0.5)
+		return float2(shard_size, shard_size);
+
+	float r = max(length(px - impact_px), 0.5);
+	float sx = max(r * 6.2831853 / radial_count, 0.05);
+	float t = max(r / ref, 0.0001);
+	float sy = ref / (ring_count * 0.6 * pow(t, -0.4));
+	return float2(sx, sy);
+}
+
+float2 rotate2(float2 v, float a)
+{
+	float s = sin(a);
+	float c = cos(a);
+	return float2(c * v.x - s * v.y, s * v.x + c * v.y);
+}
+
+float2 safe_normalize(float2 v)
+{
+	float len = length(v);
+	return len > 0.0001 ? v / len : float2(0.0, 0.0);
+}
+
+float4 PSShatteredGlass(VertData v_in) : TARGET
+{
+	float2 px = v_in.uv * uv_size;
+	float2 impact_px = impact * uv_size;
+	float ref = 0.5 * length(uv_size);
+
+	float2 p = to_pattern(px, impact_px, ref);
+	float4 nearest = voronoi_nearest(p);
+	float2 cell = nearest.zw;
+	float2 cell_id = wrap_cell(cell);
+	float3 border = voronoi_border(p, nearest.xy, cell);
+
+	// Convert the pattern-space border distance into pixels.
+	float2 scale = pattern_scale(px, impact_px, ref);
+	float2 n_px = border.yz / scale;
+	float border_px = border.x / max(length(n_px), 0.00001);
+
+	// Per-shard random values.
+	float2 rnd_a = hash22(cell_id * 1.37 + seed.yx);
+	float2 rnd_b = hash22(cell_id * 0.73 - seed);
+
+	float2 center_px = from_pattern(p + nearest.xy, impact_px, ref);
+	float2 random_dir = safe_normalize(rnd_a * 2.0 - 1.0);
+	float2 outward_dir = safe_normalize(center_px - impact_px);
+	float2 dir = safe_normalize(lerp(random_dir, outward_dir, scatter));
+	float2 offset = dir * displacement * (0.35 + 0.65 * rnd_b.x);
+	float angle = (rnd_b.y * 2.0 - 1.0) * rotation;
+
+	// Inverse-transform the pixel back into the unmoved shard.
+	float2 local = rotate2(px - center_px - offset, -angle);
+	float2 src_uv = (center_px + local) / uv_size;
+	float4 color = image.Sample(textureSampler, src_uv);
+
+	// Per-shard brightness variation, as if each piece catches light differently.
+	color.rgb *= 1.0 + (rnd_a.y * 2.0 - 1.0) * shading;
+
+	// Bevel glint along shard edges, lit from the top-left.
+	float2 edge_dir = safe_normalize(n_px);
+	float lit = 0.5 + 0.5 * dot(edge_dir, float2(-0.7071, -0.7071));
+	float bevel = 1.0 - smoothstep(0.0, crack_width + 4.0, border_px);
+	color.rgb += edge_highlight * bevel * lit * color.a;
+
+	// Crack lines.
+	float half_crack = 0.5 * crack_width;
+	float crack = crack_width > 0.0 ? 1.0 - smoothstep(half_crack, half_crack + 1.0, border_px) : 0.0;
+	crack *= crack_color.a;
+	color.rgb = lerp(color.rgb, crack_color.rgb, crack);
+	color.a = max(color.a, crack);
+
+	// Transparent gaps between shards.
+	float half_gap = 0.5 * gap_width;
+	float gap = gap_width > 0.0 ? 1.0 - smoothstep(half_gap, half_gap + 1.0, border_px) : 0.0;
+	color *= 1.0 - gap;
+
+	color.rgb = saturate(color.rgb);
+	return color;
+}
+
+technique Draw
+{
+	pass
+	{
+		vertex_shader = VSDefault(v_in);
+		pixel_shader  = PSShatteredGlass(v_in);
+	}
+}

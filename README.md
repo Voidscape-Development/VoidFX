@@ -1,59 +1,57 @@
-# OBS Plugin Template
+# VoidFX
 
-## Introduction
+VoidFX is an OBS Studio plugin that adds visual effects to any source through a single filter. Add the **VoidFX** filter to a source, pick an effect from the **Effect** dropdown, and the settings below it switch to match that effect.
 
-The plugin template is meant to be used as a starting point for OBS Studio plugin development. It includes:
+## Effects
 
-* Boilerplate plugin source code
-* A CMake project file
-* GitHub Actions workflows and repository actions
+### Chromatic Aberration
 
-## Supported Build Environments
+Splits the red and blue channels apart for an old-school VHS or lens look.
 
-| Platform  | Tool   |
-|-----------|--------|
-| Windows   | Visual Studio 17 2022 |
-| macOS     | XCode 16.0 |
-| Windows, macOS  | CMake 3.30.5 |
-| Ubuntu 24.04 | CMake 3.28.3 |
-| Ubuntu 24.04 | `ninja-build` |
-| Ubuntu 24.04 | `pkg-config`
-| Ubuntu 24.04 | `build-essential` |
+| Setting | Description |
+|---------|-------------|
+| Mode | **Linear (VHS)** shifts channels in one direction. **Radial (Lens)** pushes them outward from a center point, like a cheap lens. |
+| Strength | How far apart the channels are, in pixels. |
+| Angle | Direction of the split (Linear only). |
+| Center X / Y, Falloff | Center of the lens and how quickly the split grows towards the edges (Radial only). |
+| Jitter, Jitter Speed | Randomly wobbles the strength over time. |
+| Scanlines, Scanline Spacing | Darkened horizontal lines, like a CRT. |
+| Noise | Animated grain. |
+| Tracking Distortion | A rolling band of horizontal tearing, like a worn tape. |
 
-## Quick Start
+### Shattered Glass
 
-An absolute bare-bones [Quick Start Guide](https://github.com/obsproject/obs-plugintemplate/wiki/Quick-Start-Guide) is available in the wiki.
+Cuts the source into shards, then offsets, rotates and shades each one and draws cracks between them.
 
-## Documentation
+| Setting | Description |
+|---------|-------------|
+| Pattern | **Impact** radiates cracks out from an impact point. **Random Shards** breaks the image into evenly sized pieces. |
+| Shard Size | Average shard size in pixels (Random Shards only). |
+| Radial Cracks, Rings | How many cracks radiate from the impact and how many rings cross them (Impact only). |
+| Impact X / Y | Where the glass was hit. Also used by Scatter From Impact. |
+| Irregularity, Seed | How uneven the shards are, and which random layout is used. |
+| Shatter Amount | Scales displacement and rotation. 0% leaves the glass cracked but intact, so you can animate this to "break" the glass. |
+| Displacement, Rotation | How far each shard moves and turns at 100% shatter. |
+| Scatter From Impact | 0% moves shards in random directions, 100% throws them away from the impact point. |
+| Crack Width, Crack Color | Appearance of the crack lines. The color's alpha controls their opacity. |
+| Gap Width | Transparent space between shards. |
+| Edge Highlight, Shard Shading | Glints on shard edges and brightness variation between shards. |
 
-All documentation can be found in the [Plugin Template Wiki](https://github.com/obsproject/obs-plugintemplate/wiki).
+## Building
 
-Suggested reading to get up and running:
+VoidFX is based on the [OBS plugin template](https://github.com/obsproject/obs-plugintemplate) and builds the same way:
 
-* [Getting started](https://github.com/obsproject/obs-plugintemplate/wiki/Getting-Started)
-* [Build system requirements](https://github.com/obsproject/obs-plugintemplate/wiki/Build-System-Requirements)
-* [Build system options](https://github.com/obsproject/obs-plugintemplate/wiki/CMake-Build-System-Options)
+```sh
+cmake --preset <macos|windows-x64|ubuntu-x86_64>
+cmake --build --preset <macos|windows-x64|ubuntu-x86_64>
+```
 
-## GitHub Actions & CI
+See the [plugin template wiki](https://github.com/obsproject/obs-plugintemplate/wiki) for platform requirements.
 
-Default GitHub Actions workflows are available for the following repository actions:
+## Adding an effect
 
-* `push`: Run for commits or tags pushed to `master` or `main` branches.
-* `pr-pull`: Run when a Pull Request has been pushed or synchronized.
-* `dispatch`: Run when triggered by the workflow dispatch in GitHub's user interface.
-* `build-project`: Builds the actual project and is triggered by other workflows.
-* `check-format`: Checks CMake and plugin source code formatting and is triggered by other workflows.
+Each effect is a `struct voidfx_effect_info` (see `src/voidfx-effect.h`) with its own shader in `data/effects/`. To add one:
 
-The workflows make use of GitHub repository actions (contained in `.github/actions`) and build scripts (contained in `.github/scripts`) which are not needed for local development, but might need to be adjusted if additional/different steps are required to build the plugin.
-
-### Retrieving build artifacts
-
-Successful builds on GitHub Actions will produce build artifacts that can be downloaded for testing. These artifacts are commonly simple archives and will not contain package installers or installation programs.
-
-### Building a Release
-
-To create a release, an appropriately named tag needs to be pushed to the `main`/`master` branch using semantic versioning (e.g., `12.3.4`, `23.4.5-beta2`). A draft release will be created on the associated repository with generated installer packages or installation programs attached as release artifacts.
-
-## Signing and Notarizing on macOS
-
-Basic concepts of codesigning and notarization on macOS are explained in the correspodning [Wiki article](https://github.com/obsproject/obs-plugintemplate/wiki/Codesigning-On-macOS) which has a specific section for the [GitHub Actions setup](https://github.com/obsproject/obs-plugintemplate/wiki/Codesigning-On-macOS#setting-up-code-signing-for-github-actions).
+1. Write the shader in `data/effects/<name>.effect` with a `Draw` technique.
+2. Implement the effect in `src/effects/<name>.c`. Prefix every setting name with a short, unique prefix.
+3. Declare it in `src/voidfx-effect.h`, add it to the `voidfx_effects` list in `src/voidfx-filter.c`, add the source file to `CMakeLists.txt` and add its strings to `data/locale/en-US.ini`.

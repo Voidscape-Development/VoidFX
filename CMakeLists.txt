@@ -34,6 +34,15 @@ if(ENABLE_QT)
   )
 endif()
 
-target_sources(${CMAKE_PROJECT_NAME} PRIVATE src/plugin-main.c)
+target_sources(
+  ${CMAKE_PROJECT_NAME}
+  PRIVATE
+    src/plugin-main.c
+    src/voidfx-filter.c
+    src/voidfx-effect.h
+    src/effects/fx-util.h
+    src/effects/chromatic-aberration.c
+    src/effects/shattered-glass.c
+)
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
