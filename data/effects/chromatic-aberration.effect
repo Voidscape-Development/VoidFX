@@ -1,7 +1,7 @@
 // VoidFX - Chromatic Aberration
 // Splits the red and blue channels apart (linearly or radially like a lens)
-// and optionally layers VHS artifacts on top: scanlines, noise and tracking
-// wobble.
+// and optionally layers VHS artifacts on top: color bleed, washed-out color,
+// scanlines, noise and tracking wobble.
 
 uniform float4x4 ViewProj;
 uniform texture2d image;
@@ -23,6 +23,10 @@ uniform float scanline_intensity;
 uniform float scanline_spacing;
 uniform float noise_amount;
 uniform float tracking_amount;
+// Horizontal chroma smear in pixels.
+uniform float bleed;
+// 0..1 fade towards desaturated, low-contrast, lifted-black color.
+uniform float washed_out;
 
 sampler_state textureSampler {
 	Filter    = Linear;
@@ -79,18 +83,62 @@ float tracking_shift(float2 uv)
 	return shift_px / uv_size.x;
 }
 
-float4 PSChromaticAberration(VertData v_in) : TARGET
+// YIQ keeps luma (Y) separate from chroma (I, Q), like a composite signal.
+float3 rgb_to_yiq(float3 c)
 {
-	float2 uv = v_in.uv;
-	uv.x += tracking_shift(uv);
+	return float3(dot(c, float3(0.299, 0.587, 0.114)), dot(c, float3(0.596, -0.274, -0.322)),
+		      dot(c, float3(0.211, -0.523, 0.312)));
+}
 
+float3 yiq_to_rgb(float3 c)
+{
+	return float3(dot(c, float3(1.0, 0.956, 0.621)), dot(c, float3(1.0, -0.272, -0.647)),
+		      dot(c, float3(1.0, -1.106, 1.703)));
+}
+
+float4 sample_split(float2 uv)
+{
 	float2 offset = channel_offset(uv);
 
 	float4 r = image.Sample(textureSampler, uv + offset);
 	float4 g = image.Sample(textureSampler, uv);
 	float4 b = image.Sample(textureSampler, uv - offset);
 
-	float4 color = float4(r.r, g.g, b.b, max(max(r.a, g.a), b.a));
+	return float4(r.r, g.g, b.b, max(max(r.a, g.a), b.a));
+}
+
+float4 PSChromaticAberration(VertData v_in) : TARGET
+{
+	float2 uv = v_in.uv;
+	uv.x += tracking_shift(uv);
+
+	float4 color = sample_split(uv);
+
+	// Color bleed: VHS stores chroma at a much lower resolution than luma, so
+	// color trails to the right of edges while brightness stays sharp.
+	if (bleed > 0.0) {
+		float3 yiq = rgb_to_yiq(color.rgb);
+		float2 chroma = yiq.yz;
+		float total = 1.0;
+
+		for (int i = 1; i <= 8; i++) {
+			float t = float(i) / 8.0;
+			float4 tap = sample_split(uv - float2(t * bleed / uv_size.x, 0.0));
+			float w = 1.0 - t * 0.85;
+			chroma += rgb_to_yiq(tap.rgb).yz * w;
+			total += w;
+		}
+
+		color.rgb = yiq_to_rgb(float3(yiq.x, chroma / total));
+	}
+
+	// Washed out: drain saturation, flatten contrast, lift the blacks and add a
+	// faint warm cast like faded tape.
+	float luma = dot(color.rgb, float3(0.299, 0.587, 0.114));
+	float3 faded = lerp(float3(luma, luma, luma), color.rgb, 0.45);
+	faded = lerp(float3(0.5, 0.5, 0.5), faded, 0.8);
+	faded = faded * 0.88 + float3(0.1, 0.09, 0.07);
+	color.rgb = lerp(color.rgb, faded, washed_out);
 
 	// Scanlines: darken every other band of `scanline_spacing` pixels.
 	float line_phase = uv.y * uv_size.y / max(scanline_spacing, 1.0) * 3.14159265;

@@ -36,6 +36,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #define S_SCANLINE_SPACING "ca_scanline_spacing"
 #define S_NOISE "ca_noise"
 #define S_TRACKING "ca_tracking"
+#define S_BLEED "ca_bleed"
+#define S_WASHED_OUT "ca_washed_out"
 
 enum ca_mode {
 	CA_MODE_LINEAR = 0,
@@ -56,6 +58,8 @@ struct chromatic_aberration {
 	gs_eparam_t *p_scanline_spacing;
 	gs_eparam_t *p_noise_amount;
 	gs_eparam_t *p_tracking_amount;
+	gs_eparam_t *p_bleed;
+	gs_eparam_t *p_washed_out;
 
 	enum ca_mode mode;
 	float strength;
@@ -68,6 +72,8 @@ struct chromatic_aberration {
 	float scanline_spacing;
 	float noise;
 	float tracking;
+	float bleed;
+	float washed_out;
 };
 
 static void *ca_create(gs_effect_t *effect)
@@ -86,6 +92,8 @@ static void *ca_create(gs_effect_t *effect)
 	ca->p_scanline_spacing = gs_effect_get_param_by_name(effect, "scanline_spacing");
 	ca->p_noise_amount = gs_effect_get_param_by_name(effect, "noise_amount");
 	ca->p_tracking_amount = gs_effect_get_param_by_name(effect, "tracking_amount");
+	ca->p_bleed = gs_effect_get_param_by_name(effect, "bleed");
+	ca->p_washed_out = gs_effect_get_param_by_name(effect, "washed_out");
 
 	return ca;
 }
@@ -109,6 +117,8 @@ static void ca_get_defaults(obs_data_t *settings)
 	obs_data_set_default_double(settings, S_SCANLINE_SPACING, 2.0);
 	obs_data_set_default_double(settings, S_NOISE, 0.05);
 	obs_data_set_default_double(settings, S_TRACKING, 0.0);
+	obs_data_set_default_double(settings, S_BLEED, 0.0);
+	obs_data_set_default_double(settings, S_WASHED_OUT, 0.0);
 }
 
 static bool ca_mode_modified(obs_properties_t *props, obs_property_t *property, obs_data_t *settings)
@@ -155,6 +165,12 @@ static void ca_add_properties(obs_properties_t *group)
 	obs_property_float_set_suffix(p, " px");
 	obs_properties_add_float_slider(group, S_NOISE, obs_module_text("CA.Noise"), 0.0, 1.0, 0.01);
 	obs_properties_add_float_slider(group, S_TRACKING, obs_module_text("CA.Tracking"), 0.0, 1.0, 0.01);
+	p = obs_properties_add_float_slider(group, S_BLEED, obs_module_text("CA.Bleed"), 0.0, 40.0, 0.5);
+	obs_property_float_set_suffix(p, " px");
+	obs_property_set_long_description(p, obs_module_text("CA.Bleed.Description"));
+	p = obs_properties_add_float_slider(group, S_WASHED_OUT, obs_module_text("CA.WashedOut"), 0.0, 100.0, 1.0);
+	obs_property_float_set_suffix(p, "%");
+	obs_property_set_long_description(p, obs_module_text("CA.WashedOut.Description"));
 }
 
 static void ca_update(void *data, obs_data_t *settings)
@@ -176,6 +192,8 @@ static void ca_update(void *data, obs_data_t *settings)
 	ca->scanline_spacing = (float)obs_data_get_double(settings, S_SCANLINE_SPACING);
 	ca->noise = (float)obs_data_get_double(settings, S_NOISE);
 	ca->tracking = (float)obs_data_get_double(settings, S_TRACKING);
+	ca->bleed = (float)obs_data_get_double(settings, S_BLEED);
+	ca->washed_out = (float)obs_data_get_double(settings, S_WASHED_OUT) / 100.0f;
 }
 
 static void ca_set_params(void *data, const struct voidfx_frame *frame)
@@ -200,6 +218,8 @@ static void ca_set_params(void *data, const struct voidfx_frame *frame)
 	gs_effect_set_float(ca->p_scanline_spacing, ca->scanline_spacing);
 	gs_effect_set_float(ca->p_noise_amount, ca->noise);
 	gs_effect_set_float(ca->p_tracking_amount, ca->tracking);
+	gs_effect_set_float(ca->p_bleed, ca->bleed);
+	gs_effect_set_float(ca->p_washed_out, ca->washed_out);
 }
 
 const struct voidfx_effect_info voidfx_chromatic_aberration = {

@@ -18,6 +18,8 @@ Splits the red and blue channels apart for an old-school VHS or lens look.
 | Scanlines, Scanline Spacing | Darkened horizontal lines, like a CRT. |
 | Noise | Animated grain. |
 | Tracking Distortion | A rolling band of horizontal tearing, like a worn tape. |
+| Color Bleed | Smears color to the right of edges while brightness stays sharp, like VHS chroma. |
+| Washed Out | Fades the image: less saturation and contrast, lifted blacks and a faint warm cast. |
 
 ### Shattered Glass
 
