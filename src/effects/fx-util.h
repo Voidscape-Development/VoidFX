@@ -16,27 +16,30 @@ You should have received a copy of the GNU General Public License along
 with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
-#include <obs-module.h>
-#include <plugin-support.h>
+#pragma once
 
-OBS_DECLARE_MODULE()
-OBS_MODULE_USE_DEFAULT_LOCALE(PLUGIN_NAME, "en-US")
+#include <math.h>
+#include <stdint.h>
 
-extern struct obs_source_info voidfx_filter_info;
-
-const char *obs_module_description(void)
+/* Deterministic hash of an integer to [0, 1). */
+static inline float fx_hash(int32_t n)
 {
-	return obs_module_text("Description");
+	uint32_t x = (uint32_t)n;
+	x ^= x >> 16;
+	x *= 0x7feb352dU;
+	x ^= x >> 15;
+	x *= 0x846ca68bU;
+	x ^= x >> 16;
+	return (float)(x & 0xffffffU) / (float)0x1000000;
 }
 
-bool obs_module_load(void)
+/* Smooth 1D value noise in [0, 1). */
+static inline float fx_value_noise(float t)
 {
-	obs_register_source(&voidfx_filter_info);
-	obs_log(LOG_INFO, "plugin loaded successfully (version %s)", PLUGIN_VERSION);
-	return true;
-}
-
-void obs_module_unload(void)
-{
-	obs_log(LOG_INFO, "plugin unloaded");
+	float i = floorf(t);
+	float f = t - i;
+	float u = f * f * (3.0f - 2.0f * f);
+	float a = fx_hash((int32_t)i);
+	float b = fx_hash((int32_t)i + 1);
+	return a + (b - a) * u;
 }

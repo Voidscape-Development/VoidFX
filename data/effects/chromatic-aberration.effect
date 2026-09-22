@@ -1,0 +1,163 @@
+// VoidFX - Chromatic Aberration
+// Splits the red and blue channels apart (linearly or radially like a lens)
+// and optionally layers VHS artifacts on top: color bleed, washed-out color,
+// scanlines, noise and tracking wobble.
+
+uniform float4x4 ViewProj;
+uniform texture2d image;
+
+uniform float2 uv_size;
+uniform float time;
+
+// 0 = linear, 1 = radial
+uniform float radial;
+// Channel offset in pixels.
+uniform float strength;
+// Unit direction for linear mode.
+uniform float2 direction;
+// Radial mode: center in UV space and falloff exponent.
+uniform float2 center;
+uniform float falloff;
+
+uniform float scanline_intensity;
+uniform float scanline_spacing;
+uniform float noise_amount;
+uniform float tracking_amount;
+// Horizontal chroma smear in pixels.
+uniform float bleed;
+// 0..1 fade towards desaturated, low-contrast, lifted-black color.
+uniform float washed_out;
+
+sampler_state textureSampler {
+	Filter    = Linear;
+	AddressU  = Clamp;
+	AddressV  = Clamp;
+};
+
+struct VertData {
+	float4 pos : POSITION;
+	float2 uv  : TEXCOORD0;
+};
+
+VertData VSDefault(VertData v_in)
+{
+	VertData vert_out;
+	vert_out.pos = mul(float4(v_in.pos.xyz, 1.0), ViewProj);
+	vert_out.uv  = v_in.uv;
+	return vert_out;
+}
+
+float hash12(float2 p)
+{
+	float3 p3 = frac(float3(p.x, p.y, p.x) * 0.1031);
+	p3 += dot(p3, p3.yzx + 33.33);
+	return frac((p3.x + p3.y) * p3.z);
+}
+
+float2 channel_offset(float2 uv)
+{
+	float2 px = (uv - center) * uv_size;
+	float dist = length(px);
+	float half_diag = 0.5 * length(uv_size);
+	float2 radial_dir = dist > 0.0001 ? px / dist : float2(0.0, 0.0);
+	float radial_scale = pow(saturate(dist / half_diag), falloff);
+
+	float2 offset_px = lerp(direction, radial_dir * radial_scale, radial) * strength;
+	return offset_px / uv_size;
+}
+
+float tracking_shift(float2 uv)
+{
+	float row = floor(uv.y * uv_size.y);
+
+	// A distorted band that slowly rolls down the frame.
+	float band_pos = frac(time * 0.12);
+	float band_dist = abs(uv.y - band_pos);
+	band_dist = min(band_dist, 1.0 - band_dist);
+	float band = 1.0 - smoothstep(0.0, 0.06, band_dist);
+
+	float jitter = hash12(float2(row, floor(time * 30.0))) - 0.5;
+	float wave = sin(uv.y * 40.0 + time * 3.0) * 0.15;
+
+	float shift_px = tracking_amount * (band * jitter * 24.0 + wave * 4.0);
+	return shift_px / uv_size.x;
+}
+
+// YIQ keeps luma (Y) separate from chroma (I, Q), like a composite signal.
+float3 rgb_to_yiq(float3 c)
+{
+	return float3(dot(c, float3(0.299, 0.587, 0.114)), dot(c, float3(0.596, -0.274, -0.322)),
+		      dot(c, float3(0.211, -0.523, 0.312)));
+}
+
+float3 yiq_to_rgb(float3 c)
+{
+	return float3(dot(c, float3(1.0, 0.956, 0.621)), dot(c, float3(1.0, -0.272, -0.647)),
+		      dot(c, float3(1.0, -1.106, 1.703)));
+}
+
+float4 sample_split(float2 uv)
+{
+	float2 offset = channel_offset(uv);
+
+	float4 r = image.Sample(textureSampler, uv + offset);
+	float4 g = image.Sample(textureSampler, uv);
+	float4 b = image.Sample(textureSampler, uv - offset);
+
+	return float4(r.r, g.g, b.b, max(max(r.a, g.a), b.a));
+}
+
+float4 PSChromaticAberration(VertData v_in) : TARGET
+{
+	float2 uv = v_in.uv;
+	uv.x += tracking_shift(uv);
+
+	float4 color = sample_split(uv);
+
+	// Color bleed: VHS stores chroma at a much lower resolution than luma, so
+	// color trails to the right of edges while brightness stays sharp.
+	if (bleed > 0.0) {
+		float3 yiq = rgb_to_yiq(color.rgb);
+		float2 chroma = yiq.yz;
+		float total = 1.0;
+
+		for (int i = 1; i <= 8; i++) {
+			float t = float(i) / 8.0;
+			float4 tap = sample_split(uv - float2(t * bleed / uv_size.x, 0.0));
+			float w = 1.0 - t * 0.85;
+			chroma += rgb_to_yiq(tap.rgb).yz * w;
+			total += w;
+		}
+
+		color.rgb = yiq_to_rgb(float3(yiq.x, chroma / total));
+	}
+
+	// Washed out: drain saturation, flatten contrast, lift the blacks and add a
+	// faint warm cast like faded tape.
+	float luma = dot(color.rgb, float3(0.299, 0.587, 0.114));
+	float3 faded = lerp(float3(luma, luma, luma), color.rgb, 0.45);
+	faded = lerp(float3(0.5, 0.5, 0.5), faded, 0.8);
+	faded = faded * 0.88 + float3(0.1, 0.09, 0.07);
+	color.rgb = lerp(color.rgb, faded, washed_out);
+
+	// Scanlines: darken every other band of `scanline_spacing` pixels.
+	float line_phase = uv.y * uv_size.y / max(scanline_spacing, 1.0) * 3.14159265;
+	float scan = 0.5 + 0.5 * sin(line_phase);
+	color.rgb *= 1.0 - scanline_intensity * scan;
+
+	// Animated grain.
+	float grain = hash12(uv * uv_size + frac(time * 7.13) * 1000.0) - 0.5;
+	color.rgb += grain * noise_amount * color.a;
+
+	color.rgb = saturate(color.rgb);
+	return color;
+}
+
+technique Draw
+{
+	pass
+	{
+		vertex_shader = VSDefault(v_in);
+		pixel_shader  = PSChromaticAberration(v_in);
+	}
+}
